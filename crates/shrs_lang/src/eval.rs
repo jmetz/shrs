@@ -6,7 +6,6 @@ use shrs_job::{run_external_command, JobManager, Output, Process, ProcessGroup, 
 use crate::{ast, Lexer, Parser, PosixError};
 
 pub fn eval(job_manager: &mut JobManager, parser: Parser, lexer: Lexer) -> Result<(), PosixError> {
-
     let parsed = match parser.parse(lexer) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -16,16 +15,15 @@ pub fn eval(job_manager: &mut JobManager, parser: Parser, lexer: Lexer) -> Resul
         },
     };
 
-    let (procs, pgid) =
-        match eval_command(job_manager, &parsed, None, None) {
-            Ok((procs, pgid)) => (procs, pgid),
-            Err(PosixError::CommandNotFound(_)) => {
-                // let _ = cmd.run_hook(CommandNotFoundCtx {});
-                // TODO return error code 127
-                return Ok(());
-            },
-            _ => return Ok(()),
-        };
+    let (procs, pgid) = match eval_command(job_manager, &parsed, None, None) {
+        Ok((procs, pgid)) => (procs, pgid),
+        Err(PosixError::CommandNotFound(_)) => {
+            // let _ = cmd.run_hook(CommandNotFoundCtx {});
+            // TODO return error code 127
+            return Ok(());
+        },
+        _ => return Ok(()),
+    };
 
     run_job(job_manager, procs, pgid, true)?;
     Ok(())
@@ -154,7 +152,84 @@ fn eval_command(
                 Ok((vec![], None))
             }
         },
+        ast::Command::For {
+            name,
+            wordlist,
+            body,
+        } => {
+            let varname = format!("${}", name);
+            let mut procs = vec![];
+            let mut pgid = None;
+            for item in wordlist {
+                // Perform substitutions
+
+                match body.as_ref() {
+                    ast::Command::Simple {
+                        assigns,
+                        redirects,
+                        args: old_args,
+                    } => {
+                        let args = old_args
+                            .iter()
+                            .map(|word| word.replace(&varname, item))
+                            .collect();
+                        let inner_cmd = &ast::Command::Simple {
+                            assigns: assigns.clone(),
+                            redirects: redirects.clone(),
+                            args,
+                        };
+                        // eval_command(job_manager, &cmd, stdin, stdout);
+                        match eval_command(job_manager, inner_cmd, None, None) {
+                            Ok((proc, pgid_)) => {
+                                pgid = pgid_;
+                                procs.extend(proc);
+                            },
+                            Err(_) => (),
+                        }
+                    },
+                    ast::Command::SeqList(cmd1, cmd2) => {
+                        // println!("cmd2 is: {:#?}", cmd2);
+                        let res = match cmd1.as_ref() {
+                            ast::Command::Simple {
+                                assigns,
+                                redirects,
+                                args: old_args,
+                            } => {
+                                let args = old_args
+                                    .iter()
+                                    .map(|word| word.replace(&varname, item))
+                                    .collect();
+                                let inner_cmd = &ast::Command::Simple {
+                                    assigns: vec![],   // assigns.clone(),
+                                    redirects: vec![], // redirects.clone(),
+                                    args,
+                                };
+                                match eval_command(job_manager, inner_cmd, None, None) {
+                                    Ok((proc, pgid_)) => {
+                                        pgid = pgid_;
+                                        procs.extend(proc);
+                                    },
+                                    Err(_) => {},
+                                };
+                            },
+                            _ => {
+                                eprintln!("Unhandled command type: {:#?}", body);
+                                todo!()
+                            },
+                        };
+                    },
+                    _ => {
+                        eprintln!("Unhandled command type: {:#?}", body);
+                        todo!()
+                    },
+                }
+            }
+            Ok((procs, pgid))
+        },
         ast::Command::None => Ok((vec![], None)),
-        _ => todo!(),
+        _ => {
+            eprintln!("Unhandled command type: {:#?}", cmd);
+            todo!()
+        },
     }
 }
